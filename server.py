@@ -1,9 +1,30 @@
 import socket
 import threading
 import json
+import sqlite3
+from datetime import datetime
 
 HOST = "0.0.0.0"
 PORT = 5000
+
+# Database setup
+conn_db = sqlite3.connect("devices.db", check_same_thread=False)
+cursor = conn_db.cursor()
+
+cursor.execute("""
+CREATE TABLE IF NOT EXISTS device_data (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    device_name TEXT,
+    ip TEXT,
+    cpu REAL,
+    memory REAL,
+    disk REAL,
+    timestamp TEXT
+)
+""")
+
+conn_db.commit()
+
 
 def handle_client(conn, addr):
     print(f"[CONNECTED] {addr}")
@@ -25,12 +46,27 @@ def handle_client(conn, addr):
             print(f"Memory: {device_data['memory']}%")
             print(f"Disk: {device_data['disk']}%")
 
+            cursor.execute("""
+            INSERT INTO device_data (device_name, ip, cpu, memory, disk, timestamp)
+            VALUES (?, ?, ?, ?, ?, ?)
+            """, (
+                device_data["device_name"],
+                device_data["ip"],
+                device_data["cpu"],
+                device_data["memory"],
+                device_data["disk"],
+                datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            ))
+
+            conn_db.commit()
+
         except Exception as e:
             print(f"[ERROR] {e}")
             break
 
     conn.close()
     print(f"[DISCONNECTED] {addr}")
+
 
 server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
 server.bind((HOST, PORT))
