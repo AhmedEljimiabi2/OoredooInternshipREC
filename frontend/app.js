@@ -11,18 +11,18 @@ async function loadDevices() {
 
     devices.forEach(d => {
         const option = document.createElement("option");
-        option.value = d.id;
-        option.text = d.hostname || d.id;
+        option.value = d.device_name;
+        option.text = `${d.device_name} (${d.ip})`;
         select.appendChild(option);
     });
 
     if (devices.length > 0) {
-        loadMetrics(devices[0].id);
+        loadMetrics(devices[0].device_name);
     }
 }
 
-async function loadMetrics(deviceId) {
-    const res = await fetch(`${API}/metrics/${deviceId}`);
+async function loadMetrics(deviceName) {
+    const res = await fetch(`${API}/metrics/${deviceName}`);
     const data = await res.json();
 
     const labels = data.map(d => d.timestamp);
@@ -30,9 +30,9 @@ async function loadMetrics(deviceId) {
     const memory = data.map(d => d.memory);
     const disk = data.map(d => d.disk);
 
-    renderChart("cpuChart", "CPU", labels, cpu, cpuChart, c => cpuChart = c);
-    renderChart("memoryChart", "Memory", labels, memory, memoryChart, c => memoryChart = c);
-    renderChart("diskChart", "Disk", labels, disk, diskChart, c => diskChart = c);
+    renderChart("cpuChart", "CPU %", labels, cpu, cpuChart, c => cpuChart = c);
+    renderChart("memoryChart", "Memory %", labels, memory, memoryChart, c => memoryChart = c);
+    renderChart("diskChart", "Disk %", labels, disk, diskChart, c => diskChart = c);
 }
 
 function renderChart(id, label, labels, data, chart, setChart) {
