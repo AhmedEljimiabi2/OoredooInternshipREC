@@ -1,89 +1,96 @@
-import socket
-import threading
-import json
-import sqlite3
+from fastapi import FastAPI
+from fastapi.responses import HTMLResponse
+from pydantic import BaseModel
 from datetime import datetime
 
-HOST = "0.0.0.0"
-PORT = 5000
+app = FastAPI()
 
-# ---------------- DB ----------------
+metrics_db = []
 
-conn_db = sqlite3.connect("devices.db", check_same_thread=False)
-cursor = conn_db.cursor()
+class Metric(BaseModel):
+    device_id: str
+    cpu: float
+    memory: float
+    disk: float
 
-cursor.execute("""
-CREATE TABLE IF NOT EXISTS device_data (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    device_id TEXT,
-    device_name TEXT,
-    ip TEXT,
-    cpu REAL,
-    memory REAL,
-    disk REAL,
-    timestamp TEXT
-)
-""")
+@app.post("/metrics")
+def receive_metrics(metric: Metric):
+    entry = metric.dict()
+    entry["timestamp"] = datetime.utcnow().isoformat()
+    metrics_db.append(entry)
+    return {"status": "ok"}
 
-conn_db.commit()
+@app.get("/metrics")
+def get_metrics():
+    return metrics_db
 
-# ---------------- CLIENT HANDLER ----------------
 
-def handle_client(conn, addr):
-    print(f"[CONNECTED] {addr}")
+# 👇 NEW: dashboard page
+@app.get("/", response_class=HTMLResponse)
+def dashboard():
+    return """
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Live System Monitor</title>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+</head>
+<body>
+    <h2>CPU Usage (Live)</h2>
+    <canvas id="cpuChart" width="800" height="400"></canvas>
 
-    buffer = ""
+    <script>
+        const ctx = document.getElementById('cpuChart').getContext('2d');
 
-    while True:
-        try:
-            data = conn.recv(4096)
-            if not data:
-                break
+        const chart = new Chart(ctx, {
+            type: 'line',
+            data: {
+                labels: [],
+                datasets: [
+                    {
+                        label: 'CPU %',
+                        data: [],
+                        borderWidth: 2
+                    },
+                    {
+                        label: 'Memory %',
+                        data: [],
+                        borderWidth: 2
+                    },
+                    {
+                        label: 'Disk %',
+                        data: [],
+                        borderWidth: 2
+                    }
+                ]
+            },
+            options: {
+                animation: false,
+                scales: {
+                    y: {
+                        min: 0,
+                        max: 100
+                    }
+                }
+            }
+        });
 
-            buffer += data.decode("utf-8")
+        async function fetchData() {
+            const res = await fetch('/metrics');
+            const data = await res.json();
 
-            while "\n" in buffer:
-                line, buffer = buffer.split("\n", 1)
+            const last = data.slice(-20); // last 20 points
 
-                if not line.strip():
-                    continue
+            chart.data.labels = last.map(d => d.timestamp.split("T")[1].split(".")[0]);
+            chart.data.datasets[0].data = last.map(d => d.cpu);
+            chart.data.datasets[1].data = last.map(d => d.memory);
+            chart.data.datasets[2].data = last.map(d => d.disk);
 
-                d = json.loads(line)
+            chart.update();
+        }
 
-                cursor.execute("""
-                INSERT INTO device_data (
-                    device_id, device_name, ip,
-                    cpu, memory, disk, timestamp
-                )
-                VALUES (?, ?, ?, ?, ?, ?, ?)
-                """, (
-                    d["device_id"],
-                    d["device_name"],
-                    d["ip"],
-                    d["cpu"],
-                    d["memory"],
-                    d["disk"],
-                    datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                ))
-
-                conn_db.commit()
-
-        except Exception as e:
-            print("[ERROR]", e)
-            break
-
-    conn.close()
-    print(f"[DISCONNECTED] {addr}")
-
-# ---------------- SERVER ----------------
-
-server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-server.bind((HOST, PORT))
-server.listen()
-
-print(f"[SERVER STARTED] {PORT}")
-
-while True:
-    conn, addr = server.accept()
-    thread = threading.Thread(target=handle_client, args=(conn, addr))
-    thread.start()
+        setInterval(fetchData, 2000);
+    </script>
+</body>
+</html>
+"""
