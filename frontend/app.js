@@ -10,69 +10,68 @@ async function loadDevices() {
     select.innerHTML = "";
 
     devices.forEach(d => {
-        const option = document.createElement("option");
-        option.value = d.device_name;
-        option.text = `${d.device_name} (${d.ip})`;
-        select.appendChild(option);
+        const opt = document.createElement("option");
+        opt.value = d.device_id;
+        opt.text = `${d.device_name} (${d.ip})`;
+        select.appendChild(opt);
     });
 
     if (devices.length > 0) {
-        loadMetrics(devices[0].device_name);
+        loadMetrics(devices[0].device_id);
     }
 }
 
-async function loadMetrics(deviceName) {
-    const res = await fetch(`${API}/metrics/${deviceName}`);
+async function loadMetrics(id) {
+    const res = await fetch(`${API}/metrics/${id}`);
     const data = await res.json();
 
     const labels = data.map(d => d.timestamp);
     const cpu = data.map(d => d.cpu);
-    const memory = data.map(d => d.memory);
+    const mem = data.map(d => d.memory);
     const disk = data.map(d => d.disk);
 
-    renderChart("cpuChart", "CPU %", labels, cpu, cpuChart, c => cpuChart = c);
-    renderChart("memoryChart", "Memory %", labels, memory, memoryChart, c => memoryChart = c);
-    renderChart("diskChart", "Disk %", labels, disk, diskChart, c => diskChart = c);
+    render("cpuChart", "CPU %", labels, cpu, c => cpuChart = c);
+    render("memoryChart", "Memory %", labels, mem, c => memoryChart = c);
+    render("diskChart", "Disk %", labels, disk, c => diskChart = c);
 }
 
-function renderChart(id, label, labels, data, chart, setChart) {
+function render(id, label, labels, data, setChart) {
     const ctx = document.getElementById(id);
 
-    if (chart) chart.destroy();
-
-    const newChart = new Chart(ctx, {
+    const chart = new Chart(ctx, {
         type: "line",
         data: {
-            labels: labels,
+            labels,
             datasets: [{
-                label: label,
-                data: data,
+                label,
+                data,
                 borderWidth: 2
             }]
         }
     });
 
-    setChart(newChart);
+    setChart(chart);
 }
-
-document.getElementById("deviceSelect").addEventListener("change", (e) => {
-    loadMetrics(e.target.value);
-});
 
 async function loadOverview() {
     const res = await fetch(`${API}/overview`);
-    const data = await res.json();
+    const d = await res.json();
 
     document.getElementById("overview").innerHTML = `
-        Devices: ${data.active_devices} <br>
-        Avg CPU: ${data.avg_cpu}%
+        Avg CPU: ${d.avg_cpu}% <br>
+        Avg Memory: ${d.avg_memory}% <br>
+        Avg Disk: ${d.avg_disk}%
     `;
 }
 
+document.getElementById("deviceSelect").addEventListener("change", e => {
+    loadMetrics(e.target.value);
+});
+
 setInterval(() => {
+    loadOverview();
     const id = document.getElementById("deviceSelect").value;
     if (id) loadMetrics(id);
-    loadOverview();
 }, 5000);
 
 loadDevices();
