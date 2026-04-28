@@ -3,10 +3,11 @@ import asyncio
 import json
 import websockets
 
-# IMPORTANT: replace with your ngrok ws URL
+# 🔥 Replace with your ngrok URL
 URL = "wss://footing-generous-proofing.ngrok-free.dev/ws/agents"
 
-DEVICE_ID = "device-1"  # change on each computer
+# Change per device
+DEVICE_ID = "device-1"
 
 
 async def run():
@@ -19,8 +20,7 @@ async def run():
                         "device_id": DEVICE_ID,
                         "cpu": psutil.cpu_percent(),
                         "memory": psutil.virtual_memory().percent,
-                        "disk": psutil.disk_usage('/').percent,
-                        "timestamp": ""
+                        "disk": psutil.disk_usage('/').percent
                     }
 
                     await ws.send(json.dumps(data))
@@ -29,7 +29,7 @@ async def run():
                     await asyncio.sleep(2)
 
         except Exception as e:
-            print("Disconnected, retrying...", e)
+            print("reconnecting...", e)
             await asyncio.sleep(3)
 
 
