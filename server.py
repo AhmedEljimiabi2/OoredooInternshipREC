@@ -1,96 +1,157 @@
-from fastapi import FastAPI
+from fastapi import FastAPI, WebSocket
 from fastapi.responses import HTMLResponse
-from pydantic import BaseModel
-from datetime import datetime
 
 app = FastAPI()
 
-metrics_db = []
-
-class Metric(BaseModel):
-    device_id: str
-    cpu: float
-    memory: float
-    disk: float
-
-@app.post("/metrics")
-def receive_metrics(metric: Metric):
-    entry = metric.dict()
-    entry["timestamp"] = datetime.utcnow().isoformat()
-    metrics_db.append(entry)
-    return {"status": "ok"}
-
-@app.get("/metrics")
-def get_metrics():
-    return metrics_db
+# connected clients
+agent_connections = set()
+dashboard_connections = set()
 
 
-# 👇 NEW: dashboard page
+# -------------------------
+# AGENT WEBSOCKET
+# -------------------------
+@app.websocket("/ws/agents")
+async def ws_agents(websocket: WebSocket):
+    await websocket.accept()
+    agent_connections.add(websocket)
+
+    try:
+        while True:
+            data = await websocket.receive_json()
+
+            # broadcast to dashboards
+            dead_dashboards = set()
+
+            for conn in dashboard_connections:
+                try:
+                    await conn.send_json(data)
+                except:
+                    dead_dashboards.add(conn)
+
+            dashboard_connections.difference_update(dead_dashboards)
+
+    except:
+        agent_connections.remove(websocket)
+
+
+# -------------------------
+# DASHBOARD WEBSOCKET
+# -------------------------
+@app.websocket("/ws/dashboard")
+async def ws_dashboard(websocket: WebSocket):
+    await websocket.accept()
+    dashboard_connections.add(websocket)
+
+    try:
+        while True:
+            await websocket.receive_text()  # keep alive
+    except:
+        dashboard_connections.remove(websocket)
+
+
+# -------------------------
+# DASHBOARD UI
+# -------------------------
 @app.get("/", response_class=HTMLResponse)
 def dashboard():
     return """
 <!DOCTYPE html>
 <html>
 <head>
-    <title>Live System Monitor</title>
+    <title>Real-Time Monitor</title>
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
 </head>
-<body>
-    <h2>CPU Usage (Live)</h2>
-    <canvas id="cpuChart" width="800" height="400"></canvas>
+<body style="font-family: Arial; padding: 20px;">
 
-    <script>
-        const ctx = document.getElementById('cpuChart').getContext('2d');
+<h2>⚡ Real-Time System Monitor (WebSocket)</h2>
 
-        const chart = new Chart(ctx, {
-            type: 'line',
-            data: {
-                labels: [],
-                datasets: [
-                    {
-                        label: 'CPU %',
-                        data: [],
-                        borderWidth: 2
-                    },
-                    {
-                        label: 'Memory %',
-                        data: [],
-                        borderWidth: 2
-                    },
-                    {
-                        label: 'Disk %',
-                        data: [],
-                        borderWidth: 2
-                    }
-                ]
-            },
-            options: {
-                animation: false,
-                scales: {
-                    y: {
-                        min: 0,
-                        max: 100
-                    }
-                }
-            }
-        });
+<label>Device:</label>
+<select id="deviceSelect"></select>
 
-        async function fetchData() {
-            const res = await fetch('/metrics');
-            const data = await res.json();
+<h3>CPU</h3>
+<canvas id="cpu"></canvas>
 
-            const last = data.slice(-20); // last 20 points
+<h3>Memory</h3>
+<canvas id="mem"></canvas>
 
-            chart.data.labels = last.map(d => d.timestamp.split("T")[1].split(".")[0]);
-            chart.data.datasets[0].data = last.map(d => d.cpu);
-            chart.data.datasets[1].data = last.map(d => d.memory);
-            chart.data.datasets[2].data = last.map(d => d.disk);
+<h3>Disk</h3>
+<canvas id="disk"></canvas>
 
-            chart.update();
-        }
+<script>
+const protocol = location.protocol === "https:" ? "wss" : "ws";
+const ws = new WebSocket(protocol + "://" + location.host + "/ws/dashboard");
 
-        setInterval(fetchData, 2000);
-    </script>
+const deviceSelect = document.getElementById("deviceSelect");
+
+function makeChart(ctx, label) {
+    return new Chart(ctx, {
+        type: "line",
+        data: { labels: [], datasets: [{ label, data: [], borderWidth: 2 }] },
+        options: { animation: false, scales: { y: { min: 0, max: 100 } } }
+    });
+}
+
+const cpuChart = makeChart(document.getElementById("cpu"), "CPU %");
+const memChart = makeChart(document.getElementById("mem"), "Memory %");
+const diskChart = makeChart(document.getElementById("disk"), "Disk %");
+
+let store = {};
+
+function updateDropdown() {
+    const devices = Object.keys(store);
+
+    deviceSelect.innerHTML = "";
+
+    devices.forEach(d => {
+        const opt = document.createElement("option");
+        opt.value = d;
+        opt.text = d;
+        deviceSelect.appendChild(opt);
+    });
+}
+
+function render(device) {
+    const data = store[device] || [];
+
+    const labels = data.map(d =>
+        new Date(d.timestamp).toLocaleTimeString()
+    );
+
+    cpuChart.data.labels = labels;
+    memChart.data.labels = labels;
+    diskChart.data.labels = labels;
+
+    cpuChart.data.datasets[0].data = data.map(d => d.cpu);
+    memChart.data.datasets[0].data = data.map(d => d.memory);
+    diskChart.data.datasets[0].data = data.map(d => d.disk);
+
+    cpuChart.update();
+    memChart.update();
+    diskChart.update();
+}
+
+deviceSelect.onchange = () => render(deviceSelect.value);
+
+ws.onmessage = (event) => {
+    const d = JSON.parse(event.data);
+
+    if (!store[d.device_id]) store[d.device_id] = [];
+
+    store[d.device_id].push(d);
+
+    store[d.device_id] = store[d.device_id].slice(-30);
+
+    updateDropdown();
+
+    if (!deviceSelect.value) {
+        deviceSelect.value = d.device_id;
+    }
+
+    render(deviceSelect.value);
+};
+</script>
+
 </body>
 </html>
 """
