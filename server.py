@@ -7,7 +7,7 @@ from datetime import datetime
 
 app = FastAPI()
 
-# ---------------- DB ----------------
+# ---------------- DATABASE ----------------
 engine = create_engine(
     "sqlite:///metrics.db",
     connect_args={"check_same_thread": False}
@@ -30,14 +30,28 @@ class MetricDB(Base):
 
 Base.metadata.create_all(bind=engine)
 
+# ---------------- AUTH (optional) ----------------
+VALID_API_KEYS = {
+    "key_abc123": "device-1",
+    "key_xyz789": "vm-device"
+}
 
 # ---------------- CONNECTIONS ----------------
 dashboard_connections = set()
 
 
-# ---------------- AGENT WEBSOCKET ----------------
+# ---------------- AGENT SOCKET ----------------
 @app.websocket("/ws/agents")
 async def ws_agents(websocket: WebSocket):
+
+    api_key = websocket.query_params.get("api_key")
+
+    if api_key not in VALID_API_KEYS:
+        await websocket.close(code=1008)
+        return
+
+    device_id = VALID_API_KEYS[api_key]
+
     await websocket.accept()
 
     db = SessionLocal()
@@ -46,9 +60,8 @@ async def ws_agents(websocket: WebSocket):
         while True:
             data = await websocket.receive_json()
 
-            # 🧠 SERVER generates timestamp (FIX for Invalid Date)
             entry = MetricDB(
-                device_id=data["device_id"],
+                device_id=device_id,
                 cpu=data["cpu"],
                 memory=data["memory"],
                 disk=data["disk"],
@@ -59,14 +72,13 @@ async def ws_agents(websocket: WebSocket):
             db.commit()
 
             payload = {
-                "device_id": entry.device_id,
-                "cpu": entry.cpu,
-                "memory": entry.memory,
-                "disk": entry.disk,
+                "device_id": device_id,
+                "cpu": data["cpu"],
+                "memory": data["memory"],
+                "disk": data["disk"],
                 "timestamp": entry.timestamp.isoformat()
             }
 
-            # 🚀 broadcast to dashboard
             dead = set()
 
             for conn in dashboard_connections:
@@ -81,9 +93,15 @@ async def ws_agents(websocket: WebSocket):
         db.close()
 
 
-# ---------------- DASHBOARD WEBSOCKET ----------------
+# ---------------- DASHBOARD SOCKET ----------------
 @app.websocket("/ws/dashboard")
 async def ws_dashboard(websocket: WebSocket):
+
+    key = websocket.query_params.get("key")
+    if key != "dashboard_secret":
+        await websocket.close(code=1008)
+        return
+
     await websocket.accept()
     dashboard_connections.add(websocket)
 
@@ -107,7 +125,7 @@ def dashboard():
 
 <body style="font-family: Arial; padding: 20px;">
 
-<h2>System Monitor</h2>
+<h2>⚡ Real-Time System Monitor</h2>
 
 <label>Device:</label>
 <select id="deviceSelect"></select>
@@ -122,15 +140,25 @@ def dashboard():
 <canvas id="disk"></canvas>
 
 <script>
+
 const protocol = location.protocol === "https:" ? "wss" : "ws";
-const ws = new WebSocket(protocol + "://" + location.host + "/ws/dashboard");
+
+const ws = new WebSocket(
+    protocol + "://" + location.host + "/ws/dashboard?key=dashboard_secret"
+);
 
 const deviceSelect = document.getElementById("deviceSelect");
+
+let store = {};
+let initialized = false;
 
 function chart(ctx, label) {
     return new Chart(ctx, {
         type: "line",
-        data: { labels: [], datasets: [{ label, data: [], borderWidth: 2 }] },
+        data: {
+            labels: [],
+            datasets: [{ label, data: [], borderWidth: 2 }]
+        },
         options: {
             animation: false,
             scales: { y: { min: 0, max: 100 } }
@@ -142,18 +170,26 @@ const cpuChart = chart(document.getElementById("cpu"), "CPU %");
 const memChart = chart(document.getElementById("mem"), "Memory %");
 const diskChart = chart(document.getElementById("disk"), "Disk %");
 
-let store = {};
 
 function updateDropdown() {
+    const devices = Object.keys(store);
+    const current = deviceSelect.value;
+
     deviceSelect.innerHTML = "";
 
-    Object.keys(store).forEach(device => {
+    devices.forEach(d => {
         const opt = document.createElement("option");
-        opt.value = device;
-        opt.text = device;
+        opt.value = d;
+        opt.text = d;
         deviceSelect.appendChild(opt);
     });
+
+    // 🔥 preserve selection (FIX)
+    if (devices.includes(current)) {
+        deviceSelect.value = current;
+    }
 }
+
 
 function render(device) {
     const data = store[device] || [];
@@ -176,7 +212,9 @@ function render(device) {
     diskChart.update();
 }
 
+
 deviceSelect.onchange = () => render(deviceSelect.value);
+
 
 ws.onmessage = (event) => {
     const d = JSON.parse(event.data);
@@ -184,17 +222,19 @@ ws.onmessage = (event) => {
     if (!store[d.device_id]) store[d.device_id] = [];
 
     store[d.device_id].push(d);
-
     store[d.device_id] = store[d.device_id].slice(-30);
 
     updateDropdown();
 
-    if (!deviceSelect.value) {
+    // 🔥 set default only once
+    if (!initialized) {
         deviceSelect.value = d.device_id;
+        initialized = true;
     }
 
     render(deviceSelect.value);
 };
+
 </script>
 
 </body>
