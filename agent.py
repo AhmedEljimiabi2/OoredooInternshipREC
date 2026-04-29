@@ -3,7 +3,7 @@ import asyncio
 import json
 import websockets
 
-URL = "wss://YOUR-NGROK-URL/ws/agents?api_key=key_abc123"
+URL = "wss://footing-generous-proofing.ngrok-free.dev/ws/agents"
 DEVICE_ID = "device-1"
 
 async def run():
