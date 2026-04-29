@@ -30,11 +30,6 @@ class MetricDB(Base):
 
 Base.metadata.create_all(bind=engine)
 
-# ---------------- AUTH (optional) ----------------
-VALID_API_KEYS = {
-    "key_abc123": "device-1",
-    "key_xyz789": "vm-device"
-}
 
 # ---------------- CONNECTIONS ----------------
 dashboard_connections = set()
@@ -43,15 +38,6 @@ dashboard_connections = set()
 # ---------------- AGENT SOCKET ----------------
 @app.websocket("/ws/agents")
 async def ws_agents(websocket: WebSocket):
-
-    api_key = websocket.query_params.get("api_key")
-
-    if api_key not in VALID_API_KEYS:
-        await websocket.close(code=1008)
-        return
-
-    device_id = VALID_API_KEYS[api_key]
-
     await websocket.accept()
 
     db = SessionLocal()
@@ -60,8 +46,9 @@ async def ws_agents(websocket: WebSocket):
         while True:
             data = await websocket.receive_json()
 
+            # save to DB
             entry = MetricDB(
-                device_id=device_id,
+                device_id=data["device_id"],
                 cpu=data["cpu"],
                 memory=data["memory"],
                 disk=data["disk"],
@@ -72,13 +59,14 @@ async def ws_agents(websocket: WebSocket):
             db.commit()
 
             payload = {
-                "device_id": device_id,
-                "cpu": data["cpu"],
-                "memory": data["memory"],
-                "disk": data["disk"],
+                "device_id": entry.device_id,
+                "cpu": entry.cpu,
+                "memory": entry.memory,
+                "disk": entry.disk,
                 "timestamp": entry.timestamp.isoformat()
             }
 
+            # broadcast to dashboard
             dead = set()
 
             for conn in dashboard_connections:
@@ -96,12 +84,6 @@ async def ws_agents(websocket: WebSocket):
 # ---------------- DASHBOARD SOCKET ----------------
 @app.websocket("/ws/dashboard")
 async def ws_dashboard(websocket: WebSocket):
-
-    key = websocket.query_params.get("key")
-    if key != "dashboard_secret":
-        await websocket.close(code=1008)
-        return
-
     await websocket.accept()
     dashboard_connections.add(websocket)
 
@@ -140,12 +122,8 @@ def dashboard():
 <canvas id="disk"></canvas>
 
 <script>
-
 const protocol = location.protocol === "https:" ? "wss" : "ws";
-
-const ws = new WebSocket(
-    protocol + "://" + location.host + "/ws/dashboard?key=dashboard_secret"
-);
+const ws = new WebSocket(protocol + "://" + location.host + "/ws/dashboard");
 
 const deviceSelect = document.getElementById("deviceSelect");
 
@@ -155,10 +133,7 @@ let initialized = false;
 function chart(ctx, label) {
     return new Chart(ctx, {
         type: "line",
-        data: {
-            labels: [],
-            datasets: [{ label, data: [], borderWidth: 2 }]
-        },
+        data: { labels: [], datasets: [{ label, data: [], borderWidth: 2 }] },
         options: {
             animation: false,
             scales: { y: { min: 0, max: 100 } }
@@ -172,20 +147,19 @@ const diskChart = chart(document.getElementById("disk"), "Disk %");
 
 
 function updateDropdown() {
-    const devices = Object.keys(store);
     const current = deviceSelect.value;
 
     deviceSelect.innerHTML = "";
 
-    devices.forEach(d => {
+    Object.keys(store).forEach(device => {
         const opt = document.createElement("option");
-        opt.value = d;
-        opt.text = d;
+        opt.value = device;
+        opt.text = device;
         deviceSelect.appendChild(opt);
     });
 
-    // 🔥 preserve selection (FIX)
-    if (devices.includes(current)) {
+    // restore selection if still valid
+    if (current && store[current]) {
         deviceSelect.value = current;
     }
 }
@@ -213,7 +187,9 @@ function render(device) {
 }
 
 
-deviceSelect.onchange = () => render(deviceSelect.value);
+deviceSelect.onchange = () => {
+    render(deviceSelect.value);
+};
 
 
 ws.onmessage = (event) => {
@@ -226,7 +202,7 @@ ws.onmessage = (event) => {
 
     updateDropdown();
 
-    // 🔥 set default only once
+    // set initial device ONLY ONCE
     if (!initialized) {
         deviceSelect.value = d.device_id;
         initialized = true;
@@ -234,7 +210,6 @@ ws.onmessage = (event) => {
 
     render(deviceSelect.value);
 };
-
 </script>
 
 </body>
