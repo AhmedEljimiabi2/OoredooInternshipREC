@@ -3,11 +3,15 @@ import asyncio
 import json
 import websockets
 
+
 # 🔥 Replace with your ngrok URL
 URL = "wss://footing-generous-proofing.ngrok-free.dev/ws/agents"
 
+DEVICE_ID = "test-device2"
+
+
 # Change per device
-DEVICE_ID = "device-1"
+DEVICE_ID = "device-2"
 
 
 async def run():
