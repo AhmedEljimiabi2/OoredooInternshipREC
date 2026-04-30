@@ -5,6 +5,9 @@ import websockets
 
 URL = "wss://footing-generous-proofing.ngrok-free.dev/ws/agents"
 
+DEVICE_ID = "test-device2"
+
+
 
 async def connect(device_id):
     try:
