@@ -40,7 +40,7 @@ device_last_seen = {}
 TIMEOUT_SECONDS = 5
 
 
-# ---------------- BACKGROUND STATUS ----------------
+# ---------------- DEVICE STATUS ----------------
 async def monitor_devices():
     while True:
         now = datetime.utcnow()
@@ -67,15 +67,14 @@ async def monitor_devices():
 
 
 @app.on_event("startup")
-async def startup_event():
+async def startup():
     asyncio.create_task(monitor_devices())
 
 
-# ---------------- HISTORY API ----------------
+# ---------------- HISTORY ----------------
 @app.get("/history/{device_id}")
-def get_history(device_id: str, minutes: int = 60):
+def history(device_id: str, minutes: int = 60):
     db = SessionLocal()
-
     cutoff = datetime.utcnow() - timedelta(minutes=minutes)
 
     rows = db.query(MetricDB)\
@@ -98,38 +97,35 @@ def get_history(device_id: str, minutes: int = 60):
     ]
 
 
-# ---------------- AGENT SOCKET ----------------
+# ---------------- AGENTS ----------------
 @app.websocket("/ws/agents")
-async def ws_agents(websocket: WebSocket):
-    await websocket.accept()
+async def agents(ws: WebSocket):
+    await ws.accept()
 
     db = SessionLocal()
     device_id = None
 
     try:
-        init = await websocket.receive_json()
-        requested_id = init.get("device_id")
+        init = await ws.receive_json()
+        requested = init.get("device_id")
 
-        if not requested_id:
-            await websocket.close()
+        if not requested:
+            await ws.close()
             return
 
-        if requested_id in active_devices:
-            await websocket.send_json({
-                "status": "error",
-                "message": "Device ID already in use"
-            })
-            await websocket.close()
+        if requested in active_devices:
+            await ws.send_json({"status": "error", "message": "Device ID in use"})
+            await ws.close()
             return
 
-        device_id = requested_id
-        active_devices[device_id] = websocket
+        device_id = requested
+        active_devices[device_id] = ws
         device_last_seen[device_id] = datetime.utcnow()
 
-        await websocket.send_json({"status": "ok"})
+        await ws.send_json({"status": "ok"})
 
         while True:
-            data = await websocket.receive_json()
+            data = await ws.receive_json()
 
             device_last_seen[device_id] = datetime.utcnow()
 
@@ -163,60 +159,109 @@ async def ws_agents(websocket: WebSocket):
 
             dashboard_connections.difference_update(dead)
 
-    except:
-        pass
-
     finally:
         if device_id:
             active_devices.pop(device_id, None)
         db.close()
 
 
-# ---------------- DASHBOARD SOCKET ----------------
+# ---------------- DASHBOARD ----------------
 @app.websocket("/ws/dashboard")
-async def ws_dashboard(websocket: WebSocket):
-    await websocket.accept()
-    dashboard_connections.add(websocket)
+async def dashboard_ws(ws: WebSocket):
+    await ws.accept()
+    dashboard_connections.add(ws)
 
     try:
         while True:
-            await websocket.receive_text()
+            await ws.receive_text()
     except:
-        dashboard_connections.remove(websocket)
+        dashboard_connections.remove(ws)
 
 
-# ---------------- DASHBOARD UI ----------------
 @app.get("/", response_class=HTMLResponse)
 def dashboard():
     return """
 <!DOCTYPE html>
 <html>
 <head>
-    <title>Monitor</title>
-    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+<title>System Monitor</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+
+<style>
+body {
+    font-family: -apple-system, sans-serif;
+    margin: 0;
+    background: #f5f5f7;
+    color: #1d1d1f;
+}
+
+header {
+    padding: 18px;
+    background: #fafafc;
+    border-bottom: 1px solid #e5e5ea;
+    font-weight: 600;
+}
+
+.container { padding: 20px; }
+
+.grid {
+    display: grid;
+    grid-template-columns: 260px 1fr;
+    gap: 20px;
+}
+
+.card {
+    background: #fafafc;
+    padding: 15px;
+    border-radius: 14px;
+    border: 1px solid #e5e5ea;
+}
+
+select, button {
+    width: 100%;
+    margin-top: 10px;
+    padding: 10px;
+    border-radius: 10px;
+    border: 1px solid #e5e5ea;
+    background: #fafafc;
+    color: #1d1d1f;
+}
+
+button { cursor: pointer; }
+
+.status-online { color: #16a34a; }
+.status-offline { color: #dc2626; }
+</style>
 </head>
 
-<body style="font-family: Arial; padding: 20px;">
+<body>
 
-<h2>⚡ System Monitor</h2>
+<header>⚡ System Monitoring Dashboard</header>
 
-<h3>Status</h3>
+<div class="container">
+<div class="grid">
+
+<div class="card">
+<h3>Devices</h3>
 <ul id="statusList"></ul>
 
-<label>Device:</label>
 <select id="deviceSelect"></select>
 
 <h3>History</h3>
+
 <select id="timeRange">
-    <option value="5">5 min</option>
-    <option value="30">30 min</option>
-    <option value="60" selected>1 hour</option>
-    <option value="1440">24 hours</option>
+<option value="5">5 min</option>
+<option value="30">30 min</option>
+<option value="60">1 hour</option>
+<option value="1440">24 hours</option>
 </select>
 
 <button onclick="loadHistory()">Load History</button>
 <button onclick="backToLive()">Back to Live</button>
 
+</div>
+
+<div class="card">
 <h3>CPU</h3>
 <canvas id="cpu"></canvas>
 
@@ -225,33 +270,77 @@ def dashboard():
 
 <h3>Disk</h3>
 <canvas id="disk"></canvas>
+</div>
+
+</div>
+</div>
 
 <script>
-const protocol = location.protocol === "https:" ? "wss" : "ws";
-const ws = new WebSocket(protocol + "://" + location.host + "/ws/dashboard");
+const ws = new WebSocket((location.protocol === "https:" ? "wss" : "ws") + "://" + location.host + "/ws/dashboard");
 
 const deviceSelect = document.getElementById("deviceSelect");
 const statusList = document.getElementById("statusList");
 
 let store = {};
 let deviceStatus = {};
-let initialized = false;
 let historyMode = false;
+let initialized = false;
 
-function chart(ctx, label) {
+function makeChart(ctx) {
     return new Chart(ctx, {
         type: "line",
-        data: { labels: [], datasets: [{ label, data: [], tension: 0.3 }] },
-        options: { animation: false, scales: { y: { min: 0, max: 100 } } }
+        data: { labels: [], datasets: [{ data: [], tension: 0.35, fill: true }] },
+        options: {
+            animation: false,
+            scales: { y: { min: 0, max: 100 } }
+        }
     });
 }
 
-const cpuChart = chart(document.getElementById("cpu"), "CPU");
-const memChart = chart(document.getElementById("mem"), "Memory");
-const diskChart = chart(document.getElementById("disk"), "Disk");
+const cpuChart = makeChart(document.getElementById("cpu"));
+const memChart = makeChart(document.getElementById("mem"));
+const diskChart = makeChart(document.getElementById("disk"));
+
+function gradient(chart, values) {
+    const ctx = chart.ctx;
+    const g = ctx.createLinearGradient(0, 0, 0, 300);
+
+    g.addColorStop(0, "#dc2626"); // red top
+    g.addColorStop(0.5, "#facc15"); // yellow middle
+    g.addColorStop(1, "#16a34a"); // green bottom
+
+    chart.data.datasets[0].borderColor = g;
+    chart.data.datasets[0].backgroundColor = "rgba(22,163,74,0.08)";
+}
+
+function render(device) {
+    const data = store[device] || [];
+
+    const labels = data.map(d => new Date(d.timestamp).toLocaleTimeString());
+
+    const cpu = data.map(d => d.cpu);
+    const mem = data.map(d => d.memory);
+    const disk = data.map(d => d.disk);
+
+    cpuChart.data.labels = labels;
+    memChart.data.labels = labels;
+    diskChart.data.labels = labels;
+
+    cpuChart.data.datasets[0].data = cpu;
+    memChart.data.datasets[0].data = mem;
+    diskChart.data.datasets[0].data = disk;
+
+    gradient(cpuChart, cpu);
+    gradient(memChart, mem);
+    gradient(diskChart, disk);
+
+    cpuChart.update();
+    memChart.update();
+    diskChart.update();
+}
 
 function updateDropdown() {
-    const current = deviceSelect.value;
+    const cur = deviceSelect.value;
     deviceSelect.innerHTML = "";
 
     Object.keys(store).forEach(d => {
@@ -261,28 +350,7 @@ function updateDropdown() {
         deviceSelect.appendChild(opt);
     });
 
-    if (current && store[current]) deviceSelect.value = current;
-}
-
-function render(device) {
-    const data = store[device] || [];
-
-    const labels = data.map(d => {
-        const t = new Date(d.timestamp);
-        return isNaN(t) ? "" : t.toLocaleTimeString();
-    });
-
-    cpuChart.data.labels = labels;
-    memChart.data.labels = labels;
-    diskChart.data.labels = labels;
-
-    cpuChart.data.datasets[0].data = data.map(d => d.cpu);
-    memChart.data.datasets[0].data = data.map(d => d.memory);
-    diskChart.data.datasets[0].data = data.map(d => d.disk);
-
-    cpuChart.update();
-    memChart.update();
-    diskChart.update();
+    if (cur && store[cur]) deviceSelect.value = cur;
 }
 
 function renderStatus() {
@@ -290,8 +358,7 @@ function renderStatus() {
 
     Object.keys(deviceStatus).forEach(d => {
         const li = document.createElement("li");
-        li.textContent = `${d}: ${deviceStatus[d]}`;
-        li.style.color = deviceStatus[d] === "online" ? "green" : "red";
+        li.innerHTML = `<b>${d}</b> - <span class="${deviceStatus[d] === "online" ? "status-online" : "status-offline"}">${deviceStatus[d]}</span>`;
         statusList.appendChild(li);
     });
 }
@@ -299,8 +366,6 @@ function renderStatus() {
 async function loadHistory() {
     const device = deviceSelect.value;
     const minutes = document.getElementById("timeRange").value;
-
-    if (!device) return;
 
     historyMode = true;
 
@@ -317,8 +382,8 @@ function backToLive() {
 
 deviceSelect.onchange = () => render(deviceSelect.value);
 
-ws.onmessage = (event) => {
-    const msg = JSON.parse(event.data);
+ws.onmessage = (e) => {
+    const msg = JSON.parse(e.data);
 
     if (msg.type === "status_update") {
         deviceStatus = msg.statuses;
@@ -329,17 +394,15 @@ ws.onmessage = (event) => {
     if (msg.type === "metric") {
         if (historyMode) return;
 
-        const d = msg;
+        if (!store[msg.device_id]) store[msg.device_id] = [];
 
-        if (!store[d.device_id]) store[d.device_id] = [];
-
-        store[d.device_id].push(d);
-        store[d.device_id] = store[d.device_id].slice(-30);
+        store[msg.device_id].push(msg);
+        store[msg.device_id] = store[msg.device_id].slice(-30);
 
         updateDropdown();
 
         if (!initialized) {
-            deviceSelect.value = d.device_id;
+            deviceSelect.value = msg.device_id;
             initialized = true;
         }
 
