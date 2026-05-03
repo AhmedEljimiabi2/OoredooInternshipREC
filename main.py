@@ -1,0 +1,378 @@
+import socket
+import threading
+import json
+from datetime import datetime, timedelta
+
+from fastapi import FastAPI, WebSocket
+from fastapi.responses import HTMLResponse
+import asyncio
+
+from sqlalchemy import create_engine, Column, Integer, String, Float, DateTime
+from sqlalchemy.orm import declarative_base, sessionmaker
+
+# ================= DATABASE =================
+engine = create_engine("sqlite:///metrics.db", connect_args={"check_same_thread": False})
+SessionLocal = sessionmaker(bind=engine)
+Base = declarative_base()
+
+
+class Metric(Base):
+    __tablename__ = "metrics"
+
+    id = Column(Integer, primary_key=True)
+    device_id = Column(String)
+    ip = Column(String)
+    cpu = Column(Float)
+    memory = Column(Float)
+    disk = Column(Float)
+    timestamp = Column(DateTime)
+
+
+Base.metadata.create_all(bind=engine)
+
+# ================= STATE =================
+devices = {}
+status = {}
+ips = {}
+last_seen = {}
+
+clients = set()
+
+app = FastAPI()
+
+
+# ================= SOCKET SERVER =================
+def handle_client(conn, addr):
+    db = SessionLocal()
+    device_id = None
+
+    try:
+        init = json.loads(conn.recv(1024).decode())
+        device_id = init["device_id"]
+
+        devices.setdefault(device_id, {
+            "cpu": [],
+            "memory": [],
+            "disk": [],
+            "time": []
+        })
+
+        status[device_id] = "online"
+        ips[device_id] = addr[0]
+
+        conn.send(json.dumps({"status": "ok"}).encode())
+
+        while True:
+            data = conn.recv(1024)
+            if not data:
+                break
+
+            msg = json.loads(data.decode())
+            now = datetime.utcnow()
+
+            last_seen[device_id] = now
+            status[device_id] = "online"
+
+            entry = Metric(
+                device_id=device_id,
+                ip=addr[0],
+                cpu=msg["cpu"],
+                memory=msg["memory"],
+                disk=msg["disk"],
+                timestamp=now
+            )
+
+            db.add(entry)
+            db.commit()
+
+            point = {
+                "type": "metric",
+                "device_id": device_id,
+                "ip": addr[0],
+                "cpu": msg["cpu"],
+                "memory": msg["memory"],
+                "disk": msg["disk"],
+                "timestamp": now.isoformat()
+            }
+
+            d = devices[device_id]
+
+            d["cpu"].append(msg["cpu"])
+            d["memory"].append(msg["memory"])
+            d["disk"].append(msg["disk"])
+            d["time"].append(now.strftime("%H:%M:%S"))
+
+            # keep last 50 points
+            for k in d:
+                d[k] = d[k][-50:]
+
+            for c in list(clients):
+                try:
+                    asyncio.run(c.send_json(point))
+                except:
+                    clients.remove(c)
+
+    finally:
+        status[device_id] = "offline"
+        conn.close()
+        db.close()
+
+
+def start_socket():
+    server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    server.bind(("0.0.0.0", 9000))
+    server.listen()
+
+    print("Socket server running on 9000")
+
+    while True:
+        conn, addr = server.accept()
+        threading.Thread(target=handle_client, args=(conn, addr), daemon=True).start()
+
+
+# ================= STATUS LOOP =================
+async def status_loop():
+    while True:
+        now = datetime.utcnow()
+
+        for d in list(last_seen.keys()):
+            if (now - last_seen[d]).seconds > 5:
+                status[d] = "offline"
+
+        for c in list(clients):
+            try:
+                await c.send_json({
+                    "type": "status",
+                    "status": status,
+                    "ips": ips
+                })
+            except:
+                clients.remove(c)
+
+        await asyncio.sleep(2)
+
+
+# ================= HISTORY API =================
+@app.get("/history/{device_id}")
+def history(device_id: str, minutes: int = 60):
+    db = SessionLocal()
+    cutoff = datetime.utcnow() - timedelta(minutes=minutes)
+
+    rows = db.query(Metric)\
+        .filter(Metric.device_id == device_id)\
+        .filter(Metric.timestamp >= cutoff)\
+        .order_by(Metric.timestamp.asc())\
+        .all()
+
+    db.close()
+
+    return [
+        {
+            "cpu": r.cpu,
+            "memory": r.memory,
+            "disk": r.disk,
+            "timestamp": r.timestamp.isoformat()
+        }
+        for r in rows
+    ]
+
+
+# ================= WEBSOCKET =================
+@app.websocket("/ws")
+async def ws(websocket: WebSocket):
+    await websocket.accept()
+    clients.add(websocket)
+
+    try:
+        while True:
+            await websocket.receive_text()
+    except:
+        clients.remove(websocket)
+
+
+# ================= UI =================
+@app.get("/", response_class=HTMLResponse)
+def ui():
+    return """
+<!DOCTYPE html>
+<html>
+<head>
+<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+</head>
+<body>
+
+<h2>Live + Historical Monitoring</h2>
+
+<select id="devices"></select>
+
+<br><br>
+
+<select id="range">
+    <option value="5">Last 5 min</option>
+    <option value="30">Last 30 min</option>
+    <option value="60" selected>Last 1 hour</option>
+</select>
+
+<button onclick="loadHistory()">Load History</button>
+<button onclick="liveMode()">Live Mode</button>
+
+<table border="1">
+<tr><th>Device</th><th>Status</th><th>IP</th></tr>
+<tbody id="table"></tbody>
+</table>
+
+<h3>CPU</h3><canvas id="cpu"></canvas>
+<h3>Memory</h3><canvas id="mem"></canvas>
+<h3>Disk</h3><canvas id="disk"></canvas>
+
+<script>
+
+const ws = new WebSocket("ws://" + location.host + "/ws");
+
+let store = {};
+let status = {};
+let ips = {};
+let historyMode = false;
+
+const select = document.getElementById("devices");
+
+function chart(id, label) {
+    return new Chart(document.getElementById(id), {
+        type: "line",
+        data: { labels: [], datasets: [{ label, data: [] }] }
+    });
+}
+
+const cpu = chart("cpu", "CPU");
+const mem = chart("mem", "Memory");
+const disk = chart("disk", "Disk");
+
+ws.onmessage = e => {
+    const msg = JSON.parse(e.data);
+
+    if (msg.type === "metric") {
+        if (historyMode) return;
+
+        if (!store[msg.device_id]) {
+            store[msg.device_id] = {
+                cpu: [], memory: [], disk: [], time: []
+            };
+        }
+
+        let d = store[msg.device_id];
+
+        d.cpu.push(msg.cpu);
+        d.memory.push(msg.memory);
+        d.disk.push(msg.disk);
+        d.time.push(new Date(msg.timestamp).toLocaleTimeString());
+
+        if (d.cpu.length > 50) {
+            d.cpu.shift();
+            d.memory.shift();
+            d.disk.shift();
+            d.time.shift();
+        }
+
+        updateDropdown();
+        render(select.value);
+    }
+
+    if (msg.type === "status") {
+        status = msg.status;
+        ips = msg.ips;
+        renderTable();
+    }
+};
+
+function updateDropdown() {
+    const cur = select.value;
+
+    select.innerHTML = "";
+
+    Object.keys(store).forEach(d => {
+        let o = document.createElement("option");
+        o.value = d;
+        o.text = d;
+        select.appendChild(o);
+    });
+
+    select.value = cur;
+}
+
+select.onchange = () => render(select.value);
+
+function render(device) {
+    if (!store[device]) return;
+
+    let d = store[device];
+
+    cpu.data.labels = d.time;
+    cpu.data.datasets[0].data = d.cpu;
+
+    mem.data.labels = d.time;
+    mem.data.datasets[0].data = d.memory;
+
+    disk.data.labels = d.time;
+    disk.data.datasets[0].data = d.disk;
+
+    cpu.update();
+    mem.update();
+    disk.update();
+}
+
+function renderTable() {
+    let t = document.getElementById("table");
+    t.innerHTML = "";
+
+    Object.keys(status).forEach(d => {
+        t.innerHTML += `
+        <tr>
+        <td>${d}</td>
+        <td style="color:${status[d]=='online'?'green':'red'}">${status[d]}</td>
+        <td>${ips[d] || ''}</td>
+        </tr>`;
+    });
+}
+
+async function loadHistory() {
+    historyMode = true;
+
+    let d = select.value;
+    let r = document.getElementById("range").value;
+
+    let res = await fetch(`/history/${d}?minutes=${r}`);
+    let data = await res.json();
+
+    store[d] = {
+        cpu: [],
+        memory: [],
+        disk: [],
+        time: []
+    };
+
+    data.forEach(x => {
+        store[d].cpu.push(x.cpu);
+        store[d].memory.push(x.memory);
+        store[d].disk.push(x.disk);
+        store[d].time.push(new Date(x.timestamp).toLocaleTimeString());
+    });
+
+    render(d);
+}
+
+function liveMode() {
+    historyMode = false;
+}
+
+</script>
+
+</body>
+</html>
+"""
+
+
+# ================= START =================
+@app.on_event("startup")
+async def startup():
+    threading.Thread(target=start_socket, daemon=True).start()
+    asyncio.create_task(status_loop())

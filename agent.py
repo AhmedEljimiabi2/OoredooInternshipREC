@@ -1,34 +1,48 @@
-import psutil
-import asyncio
+import socket
 import json
-import websockets
+import psutil
+import time
 
-URL = "wss://footing-generous-proofing.ngrok-free.dev/ws/agents"
+HOST = "192.168.10.189"
+PORT = 9000
 
 
-async def run():
-    device_id = input("Enter device ID: ")
+def connect(device):
+    s = socket.socket()
+    s.connect((HOST, PORT))
 
-    ws = await websockets.connect(URL)
-    await ws.send(json.dumps({"device_id": device_id}))
+    s.send(json.dumps({"device_id": device}).encode())
 
-    resp = json.loads(await ws.recv())
+    res = json.loads(s.recv(1024).decode())
 
-    if resp.get("status") != "ok":
-        print("❌", resp.get("message"))
-        return
+    if res["status"] != "ok":
+        print("ID in use")
+        return None
 
-    print("Connected")
+    return s
+
+
+def run():
+    while True:
+        d = input("Device ID: ")
+        sock = connect(d)
+        if sock:
+            break
 
     while True:
         data = {
             "cpu": psutil.cpu_percent(),
             "memory": psutil.virtual_memory().percent,
-            "disk": psutil.disk_usage("/").percent
+            "disk": psutil.disk_usage('/').percent
         }
 
-        await ws.send(json.dumps(data))
-        await asyncio.sleep(2)
+        try:
+            sock.send(json.dumps(data).encode())
+        except:
+            print("Reconnecting...")
+            return run()
+
+        time.sleep(2)
 
 
-asyncio.run(run())
+run()
