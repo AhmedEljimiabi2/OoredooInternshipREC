@@ -125,7 +125,7 @@ def start_socket():
     server.bind(("0.0.0.0", 9000))
     server.listen()
 
-    print("Socket server running on 9000")
+    print("Socket server running on port 9000")
 
     while True:
         conn, addr = server.accept()
@@ -192,7 +192,7 @@ async def ws(websocket: WebSocket):
         clients.remove(websocket)
 
 
-# ================= LIGHT APPLE UI =================
+# ================= UI =================
 @app.get("/", response_class=HTMLResponse)
 def ui():
     return """
@@ -216,7 +216,7 @@ body {
 }
 
 .panel {
-    margin: 20px;
+    margin-bottom: 20px;
     padding: 20px;
     border-radius: 18px;
     background: rgba(255,255,255,0.9);
@@ -255,27 +255,53 @@ table {
 td, th {
     padding: 10px;
     border-bottom: 1px solid #eee;
-    text-align: center;
+    text-align: center; 
 }
 
 canvas {
     margin-top: 20px;
+}
+
+/* ===== LIVE MODE INDICATOR ===== */
+.live-pill {
+    display: inline-block;
+    margin-left: 10px;
+    padding: 6px 12px;
+    border-radius: 999px;
+    font-size: 12px;
+    font-weight: 600;
+    background: #e8f5e9;
+    color: #1b5e20;
+    border: 1px solid #a5d6a7;
+}
+
+.history-pill {
+    background: #fff3e0;
+    color: #e65100;
+    border: 1px solid #ffcc80;
+}
+
+h3 {
+  margin-top: 0px;
 }
 </style>
 </head>
 
 <body>
 
-<div class="header">Device Monitor</div>
+<div class="header">
+Device Monitor
+<span id="modeIndicator" class="live-pill">🟢 Live</span>
+</div>
 
 <div class="panel">
 
 <select id="devices"></select>
 
 <select id="range">
-    <option value="5">5 min</option>
-    <option value="30">30 min</option>
-    <option value="60" selected>1 hour</option>
+    <option value="5">5 Minutes</option>
+    <option value="30">30 Minutes</option>
+    <option value="60" selected>1 Hour</option>
 </select>
 
 <button onclick="loadHistory()">History</button>
@@ -321,9 +347,9 @@ function chart(id, label) {
     });
 }
 
-const cpu = chart("cpu", "% Utilized");
-const mem = chart("mem", "% Used");
-const disk = chart("disk", "% Used");
+const cpu = chart("cpu", "% Utilization");
+const mem = chart("mem", "% Usage");
+const disk = chart("disk", "% Usage");
 
 ws.onmessage = e => {
     const msg = JSON.parse(e.data);
@@ -332,9 +358,7 @@ ws.onmessage = e => {
         if (historyMode) return;
 
         if (!store[msg.device_id]) {
-            store[msg.device_id] = {
-                cpu: [], memory: [], disk: [], time: []
-            };
+            store[msg.device_id] = { cpu: [], memory: [], disk: [], time: [] };
         }
 
         let d = store[msg.device_id];
@@ -411,8 +435,22 @@ function renderTable() {
     });
 }
 
+/* ===== INDICATOR ===== */
+function updateIndicator() {
+    const el = document.getElementById("modeIndicator");
+
+    if (historyMode) {
+        el.textContent = "🟡 History";
+        el.className = "live-pill history-pill";
+    } else {
+        el.textContent = "🟢 Live";
+        el.className = "live-pill";
+    }
+}
+
 async function loadHistory() {
     historyMode = true;
+    updateIndicator();
 
     let d = select.value;
     let r = document.getElementById("range").value;
@@ -434,7 +472,10 @@ async function loadHistory() {
 
 function liveMode() {
     historyMode = false;
+    updateIndicator();
 }
+
+updateIndicator();
 
 </script>
 
