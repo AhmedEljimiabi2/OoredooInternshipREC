@@ -11,7 +11,11 @@ from sqlalchemy import create_engine, Column, Integer, String, Float, DateTime
 from sqlalchemy.orm import declarative_base, sessionmaker
 
 # ================= DATABASE =================
-engine = create_engine("sqlite:///metrics.db", connect_args={"check_same_thread": False})
+engine = create_engine(
+    "sqlite:///metrics.db",
+    connect_args={"check_same_thread": False}
+)
+
 SessionLocal = sessionmaker(bind=engine)
 Base = declarative_base()
 
@@ -57,7 +61,7 @@ def handle_client(conn, addr):
             "time": []
         })
 
-        status[device_id] = "online"
+        status[device_id] = "Online"
         ips[device_id] = addr[0]
 
         conn.send(json.dumps({"status": "ok"}).encode())
@@ -71,7 +75,7 @@ def handle_client(conn, addr):
             now = datetime.utcnow()
 
             last_seen[device_id] = now
-            status[device_id] = "online"
+            status[device_id] = "Online"
 
             entry = Metric(
                 device_id=device_id,
@@ -85,16 +89,6 @@ def handle_client(conn, addr):
             db.add(entry)
             db.commit()
 
-            point = {
-                "type": "metric",
-                "device_id": device_id,
-                "ip": addr[0],
-                "cpu": msg["cpu"],
-                "memory": msg["memory"],
-                "disk": msg["disk"],
-                "timestamp": now.isoformat()
-            }
-
             d = devices[device_id]
 
             d["cpu"].append(msg["cpu"])
@@ -102,9 +96,17 @@ def handle_client(conn, addr):
             d["disk"].append(msg["disk"])
             d["time"].append(now.strftime("%H:%M:%S"))
 
-            # keep last 50 points
             for k in d:
                 d[k] = d[k][-50:]
+
+            point = {
+                "type": "metric",
+                "device_id": device_id,
+                "cpu": msg["cpu"],
+                "memory": msg["memory"],
+                "disk": msg["disk"],
+                "timestamp": now.isoformat()
+            }
 
             for c in list(clients):
                 try:
@@ -113,7 +115,7 @@ def handle_client(conn, addr):
                     clients.remove(c)
 
     finally:
-        status[device_id] = "offline"
+        status[device_id] = "Offline"
         conn.close()
         db.close()
 
@@ -137,7 +139,7 @@ async def status_loop():
 
         for d in list(last_seen.keys()):
             if (now - last_seen[d]).seconds > 5:
-                status[d] = "offline"
+                status[d] = "Offline"
 
         for c in list(clients):
             try:
@@ -190,7 +192,7 @@ async def ws(websocket: WebSocket):
         clients.remove(websocket)
 
 
-# ================= UI =================
+# ================= LIGHT APPLE UI =================
 @app.get("/", response_class=HTMLResponse)
 def ui():
     return """
@@ -198,32 +200,108 @@ def ui():
 <html>
 <head>
 <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+
+<style>
+body {
+    margin: 0;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    background: #f5f6fa;
+    color: #1c1c1e;
+}
+
+.header {
+    padding: 20px;
+    font-size: 22px;
+    font-weight: 600;
+}
+
+.panel {
+    margin: 20px;
+    padding: 20px;
+    border-radius: 18px;
+    background: rgba(255,255,255,0.9);
+    backdrop-filter: blur(15px);
+    box-shadow: 0 8px 20px rgba(0,0,0,0.08);
+    border: 1px solid rgba(0,0,0,0.05);
+}
+
+select {
+    padding: 10px;
+    border-radius: 12px;
+    border: 1px solid #ddd;
+    background: white;
+    color: #1c1c1e;
+}
+
+button {
+    padding: 10px 14px;
+    border-radius: 12px;
+    border: none;
+    background: #007aff;
+    color: white;
+    cursor: pointer;
+}
+
+button:hover {
+    background: #005fdb;
+}
+
+table {
+    width: 100%;
+    margin-top: 10px;
+    border-collapse: collapse;
+}
+
+td, th {
+    padding: 10px;
+    border-bottom: 1px solid #eee;
+    text-align: center;
+}
+
+canvas {
+    margin-top: 20px;
+}
+</style>
 </head>
+
 <body>
 
-<h2>Live + Historical Monitoring</h2>
+<div class="header">Device Monitor</div>
+
+<div class="panel">
 
 <select id="devices"></select>
 
-<br><br>
-
 <select id="range">
-    <option value="5">Last 5 min</option>
-    <option value="30">Last 30 min</option>
-    <option value="60" selected>Last 1 hour</option>
+    <option value="5">5 min</option>
+    <option value="30">30 min</option>
+    <option value="60" selected>1 hour</option>
 </select>
 
-<button onclick="loadHistory()">Load History</button>
-<button onclick="liveMode()">Live Mode</button>
+<button onclick="loadHistory()">History</button>
+<button onclick="liveMode()">Live</button>
 
-<table border="1">
-<tr><th>Device</th><th>Status</th><th>IP</th></tr>
+<table>
+<tr><th>Device ID</th><th>Status</th><th>IP Address</th></tr>
 <tbody id="table"></tbody>
 </table>
 
-<h3>CPU</h3><canvas id="cpu"></canvas>
-<h3>Memory</h3><canvas id="mem"></canvas>
-<h3>Disk</h3><canvas id="disk"></canvas>
+</div>
+
+<div class="panel">
+<h3>CPU</h3>
+<canvas id="cpu"></canvas>
+</div>
+
+<div class="panel">
+<h3>Memory</h3>
+<canvas id="mem"></canvas>
+</div>
+
+<div class="panel">
+<h3>Disk</h3>
+<canvas id="disk"></canvas>
+</div>
 
 <script>
 
@@ -243,9 +321,9 @@ function chart(id, label) {
     });
 }
 
-const cpu = chart("cpu", "CPU");
-const mem = chart("mem", "Memory");
-const disk = chart("disk", "Disk");
+const cpu = chart("cpu", "% Utilized");
+const mem = chart("mem", "% Used");
+const disk = chart("disk", "% Used");
 
 ws.onmessage = e => {
     const msg = JSON.parse(e.data);
@@ -286,7 +364,6 @@ ws.onmessage = e => {
 
 function updateDropdown() {
     const cur = select.value;
-
     select.innerHTML = "";
 
     Object.keys(store).forEach(d => {
@@ -328,7 +405,7 @@ function renderTable() {
         t.innerHTML += `
         <tr>
         <td>${d}</td>
-        <td style="color:${status[d]=='online'?'green':'red'}">${status[d]}</td>
+        <td style="color:${status[d]=='Online'?'green':'red'}">${status[d]}</td>
         <td>${ips[d] || ''}</td>
         </tr>`;
     });
@@ -343,12 +420,7 @@ async function loadHistory() {
     let res = await fetch(`/history/${d}?minutes=${r}`);
     let data = await res.json();
 
-    store[d] = {
-        cpu: [],
-        memory: [],
-        disk: [],
-        time: []
-    };
+    store[d] = { cpu: [], memory: [], disk: [], time: [] };
 
     data.forEach(x => {
         store[d].cpu.push(x.cpu);
@@ -373,6 +445,6 @@ function liveMode() {
 
 # ================= START =================
 @app.on_event("startup")
-async def startup():
+def startup():
     threading.Thread(target=start_socket, daemon=True).start()
     asyncio.create_task(status_loop())
