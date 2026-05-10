@@ -1,0 +1,342 @@
+<!DOCTYPE html>
+<html>
+<head>
+
+<title>UDP Device Monitor</title>
+
+<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+
+<style>
+
+body {
+    margin: 0;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    background: #f5f6fa;
+    color: #1c1c1e;
+}
+
+.header {
+    padding: 20px;
+    font-size: 24px;
+    font-weight: 600;
+}
+
+.panel {
+    margin: 20px;
+    padding: 20px;
+    border-radius: 20px;
+    background: rgba(255,255,255,0.9);
+    backdrop-filter: blur(15px);
+    box-shadow: 0 8px 25px rgba(0,0,0,0.08);
+    border: 1px solid rgba(0,0,0,0.05);
+}
+
+select, button {
+    padding: 10px 14px;
+    border-radius: 12px;
+    border: 1px solid #ddd;
+    background: white;
+    margin-right: 10px;
+}
+
+button {
+    background: #007aff;
+    color: white;
+    border: none;
+    cursor: pointer;
+}
+
+button:hover {
+    background: #005fdb;
+}
+
+canvas {
+    margin-top: 15px;
+}
+
+.live-pill {
+    display: inline-block;
+    margin-left: 12px;
+    padding: 6px 12px;
+    border-radius: 999px;
+    font-size: 12px;
+    font-weight: 600;
+    background: #e8f5e9;
+    color: #1b5e20;
+    border: 1px solid #a5d6a7;
+}
+
+.history-pill {
+    background: #fff3e0;
+    color: #e65100;
+    border: 1px solid #ffcc80;
+}
+
+.table {
+    width: 100%;
+    border-collapse: collapse;
+    margin-top: 20px;
+}
+
+.table td,
+.table th {
+    padding: 10px;
+    border-bottom: 1px solid #eee;
+}
+
+</style>
+
+</head>
+<body>
+
+<div class="header">
+🍎 Django UDP Monitor
+<span id="modeIndicator" class="live-pill">🟢 Live</span>
+</div>
+
+<div class="panel">
+
+<select id="devices"></select>
+
+<select id="range">
+    <option value="5">5 min</option>
+    <option value="30">30 min</option>
+    <option value="60" selected>1 hour</option>
+</select>
+
+<button onclick="loadHistory()">History</button>
+<button onclick="liveMode()">Live</button>
+
+<table class="table">
+<thead>
+<tr>
+<th>Device</th>
+<th>Status</th>
+<th>IP</th>
+</tr>
+</thead>
+<tbody id="tableBody"></tbody>
+</table>
+
+</div>
+
+<div class="panel">
+<h3>CPU Usage</h3>
+<canvas id="cpu"></canvas>
+</div>
+
+<div class="panel">
+<h3>Memory Usage</h3>
+<canvas id="mem"></canvas>
+</div>
+
+<div class="panel">
+<h3>Disk Usage</h3>
+<canvas id="disk"></canvas>
+</div>
+
+<script>
+
+const ws = new WebSocket(
+    'ws://' + window.location.host + '/ws/metrics/'
+);
+
+let store = {};
+let status = {};
+let ips = {};
+let historyMode = false;
+
+const select = document.getElementById('devices');
+
+function createChart(id, label) {
+
+    return new Chart(document.getElementById(id), {
+
+        type: 'line',
+
+        data: {
+            labels: [],
+            datasets: [{
+                label: label,
+                data: []
+            }]
+        }
+    });
+}
+
+const cpuChart = createChart('cpu', 'CPU');
+const memChart = createChart('mem', 'Memory');
+const diskChart = createChart('disk', 'Disk');
+
+ws.onmessage = event => {
+
+    const msg = JSON.parse(event.data);
+
+    if (msg.type === 'metric') {
+
+        if (historyMode) return;
+
+        if (!store[msg.device_id]) {
+
+            store[msg.device_id] = {
+                cpu: [],
+                memory: [],
+                disk: [],
+                time: []
+            };
+        }
+
+        let d = store[msg.device_id];
+
+        d.cpu.push(msg.cpu);
+        d.memory.push(msg.memory);
+        d.disk.push(msg.disk);
+
+        d.time.push(
+            new Date(msg.timestamp).toLocaleTimeString()
+        );
+
+        if (d.cpu.length > 50) {
+            d.cpu.shift();
+            d.memory.shift();
+            d.disk.shift();
+            d.time.shift();
+        }
+
+        updateDropdown();
+        render(select.value);
+    }
+
+    if (msg.type === 'status') {
+        status = msg.status;
+        ips = msg.ips;
+        renderTable();
+    }
+};
+
+function updateDropdown() {
+
+    const current = select.value;
+
+    select.innerHTML = '';
+
+    Object.keys(store).forEach(device => {
+
+        let option = document.createElement('option');
+
+        option.value = device;
+        option.text = device;
+
+        select.appendChild(option);
+    });
+
+    select.value = current || Object.keys(store)[0];
+}
+
+select.onchange = () => {
+    render(select.value);
+};
+
+function render(device) {
+
+    if (!store[device]) return;
+
+    let d = store[device];
+
+    cpuChart.data.labels = d.time;
+    cpuChart.data.datasets[0].data = d.cpu;
+
+    memChart.data.labels = d.time;
+    memChart.data.datasets[0].data = d.memory;
+
+    diskChart.data.labels = d.time;
+    diskChart.data.datasets[0].data = d.disk;
+
+    cpuChart.update();
+    memChart.update();
+    diskChart.update();
+}
+
+function renderTable() {
+
+    const table = document.getElementById('tableBody');
+
+    table.innerHTML = '';
+
+    Object.keys(status).forEach(device => {
+
+        table.innerHTML += `
+        <tr>
+            <td>${device}</td>
+            <td style="color:${status[device]=='online' ? 'green' : 'red'}">
+                ${status[device]}
+            </td>
+            <td>${ips[device] || ''}</td>
+        </tr>
+        `;
+    });
+}
+
+function updateIndicator() {
+
+    const el = document.getElementById('modeIndicator');
+
+    if (historyMode) {
+        el.textContent = '🟡 History';
+        el.className = 'live-pill history-pill';
+    }
+
+    else {
+        el.textContent = '🟢 Live';
+        el.className = 'live-pill';
+    }
+}
+
+async function loadHistory() {
+
+    historyMode = true;
+
+    updateIndicator();
+
+    const device = select.value;
+
+    const range = document.getElementById('range').value;
+
+    const response = await fetch(
+        `/history/${device}/?minutes=${range}`
+    );
+
+    const data = await response.json();
+
+    store[device] = {
+        cpu: [],
+        memory: [],
+        disk: [],
+        time: []
+    };
+
+    data.forEach(x => {
+
+        store[device].cpu.push(x.cpu);
+        store[device].memory.push(x.memory);
+        store[device].disk.push(x.disk);
+
+        store[device].time.push(
+            new Date(x.timestamp).toLocaleTimeString()
+        );
+    });
+
+    render(device);
+}
+
+function liveMode() {
+    historyMode = false;
+    updateIndicator();
+}
+
+updateIndicator();
+
+</script>
+
+</body>
+</html>
