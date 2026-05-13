@@ -19,6 +19,8 @@ body {
     padding: 20px;
     font-size: 24px;
     font-weight: 600;
+    display: flex;
+    justify-content: space-between;
 }
 
 .panel {
@@ -85,31 +87,33 @@ canvas {
     text-align: center;
 }
 
+.right {
+    display: flex;
+    gap: 10px;
+}
+
 </style>
 
 </head>
 <body>
 
 <div class="header">
-Device Monitor
-<span id="modeIndicator" class="live-pill">🟢 Live</span>
+    <div>
+        Device Monitor
+        <span id="modeIndicator" class="live-pill">🟢 Live</span>
+    </div>
 
-{% if user.is_superuser %}
+    <div class="right">
+        {% if user.is_superuser %}
+        <a href="/admin/">
+            <button>Admin Panel</button>
+        </a>
+        {% endif %}
 
-    <a href="/admin/">
-    <button>Admin Panel</button>
-    </a>
-
-{% endif %}
-
-<a href="/logout/">
-
-    <button>
-    Logout
-    </button>
-
-</a>
-
+        <a href="/logout/">
+            <button>Logout</button>
+        </a>
+    </div>
 </div>
 
 <div class="panel">
@@ -117,9 +121,9 @@ Device Monitor
 <select id="devices"></select>
 
 <select id="range">
-    <option value="5">5 min</option>
-    <option value="30">30 min</option>
-    <option value="60" selected>1 hour</option>
+    <option value="5">5 Minutes</option>
+    <option value="30">30 Minutes</option>
+    <option value="60" selected>1 Hour</option>
 </select>
 
 <button onclick="loadHistory()">History</button>
