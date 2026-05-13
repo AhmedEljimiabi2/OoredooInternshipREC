@@ -1,19 +1,29 @@
 from django.shortcuts import render
 from django.http import JsonResponse
 
+from django.contrib.auth.decorators import login_required
+
 from .models import Metric
 
 from datetime import timedelta
 from django.utils.timezone import now
 
 
+@login_required
 def index(request):
-    return render(request, 'dashboard/index.html')
+
+    return render(
+        request,
+        'dashboard/index.html'
+    )
 
 
+@login_required
 def history(request, device_id):
 
-    minutes = int(request.GET.get('minutes', 60))
+    minutes = int(
+        request.GET.get('minutes', 60)
+    )
 
     cutoff = now() - timedelta(minutes=minutes)
 
@@ -25,6 +35,7 @@ def history(request, device_id):
     data = []
 
     for r in rows:
+
         data.append({
             'cpu': r.cpu,
             'memory': r.memory,

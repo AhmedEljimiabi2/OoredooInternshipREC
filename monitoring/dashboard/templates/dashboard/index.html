@@ -82,6 +82,7 @@ canvas {
 .table th {
     padding: 10px;
     border-bottom: 1px solid #eee;
+    text-align: center;
 }
 
 </style>
@@ -90,8 +91,25 @@ canvas {
 <body>
 
 <div class="header">
-🍎 Django UDP Monitor
+Device Monitor
 <span id="modeIndicator" class="live-pill">🟢 Live</span>
+
+{% if user.is_superuser %}
+
+    <a href="/admin/">
+    <button>Admin Panel</button>
+    </a>
+
+{% endif %}
+
+<a href="/logout/">
+
+    <button>
+    Logout
+    </button>
+
+</a>
+
 </div>
 
 <div class="panel">
@@ -121,17 +139,17 @@ canvas {
 </div>
 
 <div class="panel">
-<h3>CPU Usage</h3>
+<h3>CPU</h3>
 <canvas id="cpu"></canvas>
 </div>
 
 <div class="panel">
-<h3>Memory Usage</h3>
+<h3>Memory</h3>
 <canvas id="mem"></canvas>
 </div>
 
 <div class="panel">
-<h3>Disk Usage</h3>
+<h3>Disk</h3>
 <canvas id="disk"></canvas>
 </div>
 
@@ -164,9 +182,9 @@ function createChart(id, label) {
     });
 }
 
-const cpuChart = createChart('cpu', 'CPU');
-const memChart = createChart('mem', 'Memory');
-const diskChart = createChart('disk', 'Disk');
+const cpuChart = createChart('cpu', '% Utilization');
+const memChart = createChart('mem', '% Usage');
+const diskChart = createChart('disk', '% Usage');
 
 ws.onmessage = event => {
 
