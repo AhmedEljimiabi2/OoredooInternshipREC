@@ -290,7 +290,7 @@ function renderTable() {
         table.innerHTML += `
         <tr>
             <td>${device}</td>
-            <td style="color:${status[device]=='online' ? 'green' : 'red'}">
+            <td style="color:${status[device]=='Online' ? 'green' : 'red'}">
                 ${status[device]}
             </td>
             <td>${ips[device] || ''}</td>
